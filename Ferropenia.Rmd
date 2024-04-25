@@ -1,0 +1,1140 @@
+---
+title: "Ferropenia"
+author: "Andrea"
+date: "2024-03-21"
+output:
+  pdf_document:
+    toc: yes
+    toc_depth: '3'
+  word_document:
+    toc: yes
+    toc_depth: '3'
+  output: null
+  html_document:
+    toc: yes
+    toc_depth: 3
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r warning=FALSE, message=FALSE}
+#Librer?as necesarias
+library(dplyr)
+library(readxl)
+library(ggplot2)
+library(GGally)
+library(kableExtra)
+library(corrplot)
+library(patchwork)
+library(ggpubr)
+
+library(tm)
+library(stringr)
+library(class)
+library(gmodels)
+library(ROCR)
+library(caret)
+```
+
+# 1. Creación del dataset
+
+## 1.1 Importación del excel
+
+Partimos de un excel generado por el Sistema Informático del Laboratorio
+(SIL) en el que se puso como condición que los pacientes tuvieran un VCM
+por debajo del rango de normalidad, tanto bajo como muy bajo
+
+```{r warning=FALSE, message=FALSE}
+
+ferropenia = read_excel("~/aaaatalasemias/TFM/Ferropenia2.xls", 
+col_types = c("text", "text", "numeric","text", "text", "text", "text", "text", "text", "numeric", "numeric", "numeric", "numeric", "numeric", "numeric", "numeric", "numeric", "numeric", "numeric", "numeric", "numeric", "numeric", "text", "text", "numeric", "numeric", "numeric", "numeric", "numeric", "numeric", "numeric"))
+str (ferropenia)
+
+```
+
+## 1.2 Pasos a seguir para conseguir el Dataset objetivo:
+
+### 1.2.1. Excluir a los pacientes que les falte alguna prueba necesaria para filtrar
+
+Hematíes, hemoglobina, VCM, HCM, ADE, hematocrito, CHCM, PCR, ferritina,
+IST, receptor soluble, además de la edad y sexo del paciente que serán
+necesarios para tener en cuenta los valores de referencia.
+
+```{r}
+# Definimos las variables necesarias en un vector
+pruebas_necesarias = c("HTIE", "HGB", "VCM", "HCM", "IDM", "HTCO", "CHCM", "PCR", "FERR", "ISTR")
+
+# Nos quedamos solo con los pacientes que tengan todas las pruebas
+ferropenia_filtrado = ferropenia[complete.cases(ferropenia[, pruebas_necesarias]), ]
+```
+
+### 1.2.2. Pasar todas las edades de días (x/365) y meses (x/12) a años
+
+```{r}
+# Hacemos una función para que la edad esté en años 
+calcular_edad_years=function(numero, letra){
+  if (letra == "mes" || letra == "meses") {
+    edad_ajustada = numero / 12
+  } else if (letra == "días") {
+    edad_ajustada = numero / 365
+  } else {
+    edad_ajustada = numero  # Si no se especifica "mes" o "días", retornar el mismo valor
+  }
+  
+  return(edad_ajustada)
+  
+}
+
+# creamos una columna nueva con la edad ajustada
+ferropenia_filtrado$edad_normalizada <- mapply(calcular_edad_years, 
+                                        ferropenia_filtrado$`Edad(numero)`, 
+                                        ferropenia_filtrado$`Edad(2parte)`)
+
+
+```
+
+### 1.2.3. Quedarnos con los pacientes hasta \>15 días -18 años
+
+```{r}
+#str(ferropenia_filtrado)
+ferropenia_filtrado = filter(ferropenia_filtrado, edad_normalizada >= (15/365) & edad_normalizada <=18)
+
+```
+
+### 1.2.4. Excluir a los pacientes con una PCR\>1,5 para descartar posibles inflamación/infección
+
+```{r}
+ferropenia_filtrado = filter(ferropenia_filtrado, PCR<1.5)
+```
+
+### 1.2.5. Nos quitamos los pacientes duplicados
+
+```{r}
+#Seleccionamos los duplicados, quedandonos solo con el primero
+duplicados <- duplicated(ferropenia_filtrado$NHC, fromLast = F)
+
+# Filtramos el dataset
+ferropenia_sin_duplicados <- ferropenia_filtrado[!duplicados, ]
+
+```
+
+### 1.2.6. Clasificar a los pacientes
+
+Con las siguientes etiquetas en función de los valores de referencia: 
+
+- Ferropenia latente: ferritina baja y IST normal, Hb normal. 
+
+- Ferropenia funcional: ferritina baja y IST bajo, Hb normal. 
+
+- Anemia ferropénica: ferritina baja y IST bajo, Hb baja. 
+
+- Ausencia ferropenia: ferritina normal, IST normal.
+
+Se añadirán columnas que nos indiquen si cada parámetro está alterado en función de los rangos de referencias por edad y sexo
+
+```{r}
+head(sort(ferropenia_sin_duplicados$edad_normalizada)) # veamos cual es la edad más baja que tenemos que incluir
+head(sort(ferropenia_sin_duplicados$edad_normalizada, decreasing=T)) #edad más alta
+```
+
+```{r}
+#Ferritina
+#Rangos de referencia:
+#0.1666667- 0.5 años= 15,3 – 375
+#0.5 – 1 = 13.3-55.8
+#1-16= 10.3-55.8
+#>16 años (M): 18.7-102
+#>16 años (F): 12-150
+ferritina_function = function(ferritina, edad, sexo){
+  if (edad >= 0.1666667 & edad<0.5 & ferritina< 15.3){
+    return (1)
+  } else if (edad >= 0.5 & edad<1 & ferritina< 13.3){
+    return (1)
+  } else if (edad >= 1 & edad<16 & ferritina< 10.3){
+    return (1)
+  }  else if (edad >= 15 & edad<= 18 & sexo== "M" & ferritina< 18.7)  {
+    return (1)
+  } else if (edad >= 15 & edad<= 18 & sexo== "F" & ferritina< 12 ) {
+    return (1)
+  } else {
+    return (0)
+  }
+}
+ferropenia_sin_duplicados$ferritina_baja = mapply(ferritina_function, ferropenia_sin_duplicados$FERR, ferropenia_sin_duplicados$edad_normalizada,ferropenia_sin_duplicados$`Sexo del Paciente`)
+```
+
+```{r}
+#IST
+#Rangos de referencia:
+#0.1666667-0.25 años : 21 - 63
+#0.25-0.4166667 años = 7 - 53
+#0.4166667-0.5833333 años = 10 - 43
+#0.5833333- 2 años = 6 – 38
+#2 años - 12 años: 7 - 43
+#12 años - 18 años: 18 - 46
+
+
+IST_function = function(IST, edad, sexo){
+  if (edad >= 0.1666667 & edad<0.25 & IST< 23){
+    return(1)
+  } else if (edad >= 0.25 & edad<0.4166667 & IST< 7){
+    return(1)
+  } else if (edad >= 0.4166667 & edad<0.5833333 & IST< 10){
+    return (1)
+  } else if (edad >= 0.5833333 & edad<2 & IST< 6){
+    return (1)
+  } else if (edad >= 2 & edad<12 & IST< 7){
+    return (1)
+  } else if (edad >= 12 & edad<= 18 & IST< 18)  {
+    return (1)
+  } else {
+    return (0)
+  }
+}
+ferropenia_sin_duplicados$IST_bajo = mapply(IST_function, ferropenia_sin_duplicados$ISTR, ferropenia_sin_duplicados$edad_normalizada,ferropenia_sin_duplicados$`Sexo del Paciente`)
+```
+
+```{r}
+#Hemoglobina 
+hemoglobina_function = function(hemoglobina, edad, sexo){
+   if (edad >=0.1666667 & edad<0.25 & hemoglobina< 9){
+    return(1)
+  } else if (edad >= 0.25 & edad<0.5 & hemoglobina< 9.5){
+    return(1)
+  } else if (edad >= 0.5 & edad<2 & hemoglobina< 10.5){
+    return (1)
+  } else if (edad >= 2 & edad<6 & hemoglobina< 11.5){
+    return (1)
+  } else if (edad >= 6 & edad<12 & hemoglobina< 11.5){
+    return (1)
+  } else if (edad >= 12 & edad<= 18 & sexo== "M" & hemoglobina< 13)  {
+    return (1)
+  } else if (edad >= 12 & edad<= 18 & sexo== "F" & hemoglobina< 12 ) {
+    return (1)
+  } else {
+    return (0)
+  }
+}
+ferropenia_sin_duplicados$Hb_baja = mapply(hemoglobina_function, ferropenia_sin_duplicados$HGB, ferropenia_sin_duplicados$edad_normalizada,ferropenia_sin_duplicados$`Sexo del Paciente`)
+
+#0.25 – 0.5 años: : 9,5 - 13,5
+#0.5 – 2 años:  10,5 - 13,5
+#2 - 6 años: 11,5 - 13,5
+#6 - 12 años: 11,5 - 15,5
+#12 - 18 años (M): 13 - 16
+#12 - 18 años (F): 12 – 16
+```
+
+Hacemos la clasificacion en funcion de los parametros alterados 
+
+- Si ferritina 1 , IST 0 , hemoglobina 0= Ferropenia latente 
+
+- Si ferritina 1, IST 1 , hemoglobina 0 = Ferropenia funtional 
+
+- Si ferritina 1 , IST 1, hemoglobina 1 = Anemia ferropenica 
+
+- Si ferritina 0 , IST 0 = Ausencia de ferropenia
+
+```{r}
+clasificacion_function = function(ferritina, IST, hemoglobina){
+  if (ferritina == 1 & IST==0 & hemoglobina==0){
+    return("Ferropenia latente")
+  } else if (ferritina == 1 & IST==1  & hemoglobina==0){
+    return ("Ferropenia funcional")
+  } else if (ferritina == 1 & IST==1  & hemoglobina==1){
+    return ("Anemia ferropenica")
+  } else if (ferritina == 0 & IST==0 ){
+    return ("Ausencia de ferropenia")
+  }else {
+    return ("NA")
+}
+}
+ferropenia_sin_duplicados$clasificacion= mapply(clasificacion_function, ferropenia_sin_duplicados$ferritina_baja, ferropenia_sin_duplicados$IST_bajo , ferropenia_sin_duplicados$Hb_baja)
+```
+
+
+### 1.2.7. Seleccionamos las variables de interés en nuestro estudio
+
+```{r}
+dataset= ferropenia_sin_duplicados[, c("Sexo del Paciente","edad_normalizada", "HTIE", "HGB", "VCM","HCM", "IDM", "CHCM", "HTCO", "clasificacion")]
+dataset=filter(dataset, clasificacion != "NA")
+```
+
+# 2. Análisis descriptivo
+
+## 2.1 Lectura de los datos
+
+Las variables que vamos a utilizar:
+
+```{r}
+names(dataset)
+```
+
+"clasificacion" contiene las clases a predecir.
+
+El número de observaciones según la clase es:
+
+```{r}
+kable(as.data.frame(table(dataset$clasificacion)),
+      col.names= c("Clasificación", "Frecuencia"),
+      align= "cc")
+```
+
+```{r}
+pie(table(dataset$clasificacion))
+```
+
+Tenemos una distribución desbalanceada, hay que tener en cuenta para el tratamiento de los datos.
+
+## 2.2 Exploración de los datos
+
+### 2.2.1 Resumen de las variables:
+
+```{r}
+summary(dataset)
+```
+
+Nuestro dataset no necesita llevar a cabo la eliminación de datos
+faltantes (NA) ya que se ha llevado a cabo en la realización del
+dataset.
+
+Por último vemos con tipo de variables estamos trabajando:
+
+```{r}
+str(dataset)
+```
+
+Podemos er que todas las variables son numéricas excepto el "Sexo del
+Paciente" y la "clasificacion", que convertiremos a factor:
+
+```{r}
+dataset$`Sexo del Paciente`= as.factor(dataset$`Sexo del Paciente`)
+dataset$clasificacion <- factor(dataset$clasificacion, 
+                                levels = c("Anemia ferropenica", "Ferropenia funcional", "Ferropenia latente", "Ausencia de ferropenia"), 
+                                labels = c("AF", "FF", "FL", "NF"))
+dataset$`Sexo del Paciente` <- factor(dataset$`Sexo del Paciente`, 
+                                levels = c("F", "M"), 
+                                labels = c(1,0))
+str(dataset)
+```
+
+Podemos ver lo primeros registros:
+
+```{r}
+head(dataset)
+```
+
+### 2.2.2 Gráficos exploratorios
+
+#### Visualización de las variables cuantitativas en forma de boxplot
+
+```{r}
+#seleccionamos solo las variables cuantitativas
+variables_cuantitativas <- dataset[, !(names(dataset) %in% c("Sexo del Paciente", "clasificacion"))]
+colores= rainbow(ncol(variables_cuantitativas))
+boxplot(variables_cuantitativas, col= colores)
+```
+
+
+Como se observa en el gráfico el rango de variabilidad entre variables
+es muy grande por eso en algunos casos con rango de valores muy
+estrechos queda reducida la caja a una linea. Esto nos indica que será
+necesaria la normalización de los datos para que las variables tengan el
+mismo peso.
+
+
+#### Histogramas y boxplot en función de la clase y sexo:
+
+```{r warning=FALSE, message=FALSE}
+# Gráfico 1: Histograma
+p1= ggplot(dataset, aes(x = edad_normalizada, color = `Sexo del Paciente`)) +
+    geom_histogram(fill = "white", alpha = 0.5, position = "identity") +
+    theme_classic()
+
+
+# Gráfico 2: Gráfico de cajas
+p2= ggplot(data = dataset, aes(x = clasificacion, y = edad_normalizada, col = `Sexo del Paciente`)) + 
+    geom_boxplot()+
+    theme_classic()
+   
+final_plot = ggarrange(p1, p2, legend = "top")
+final_plot = annotate_figure(final_plot, top = text_grob("Edad", size =15))
+final_plot
+
+```
+
+
+```{r warning=FALSE, message=FALSE}
+# Gráfico 1: Histograma
+p1= ggplot(dataset, aes(x = HTIE, color = `Sexo del Paciente`)) +
+    geom_histogram(fill = "white", alpha = 0.5, position = "identity") +
+    theme_classic()
+
+
+# Gráfico 2: Gráfico de cajas
+p2= ggplot(data = dataset, aes(x = clasificacion, y = HTIE, col = `Sexo del Paciente`)) + 
+    geom_boxplot()+
+    theme_classic()
+   
+final_plot = ggarrange(p1, p2, legend = "top")
+final_plot = annotate_figure(final_plot, top = text_grob("Hematíes", size =15))
+final_plot
+```
+
+
+```{r warning=FALSE, message=FALSE}
+# Gráfico 1: Histograma
+p1= ggplot(dataset, aes(x = HGB, color = `Sexo del Paciente`)) +
+    geom_histogram(fill = "white", alpha = 0.5, position = "identity") +
+    theme_classic()
+
+# Gráfico 2: Gráfico de cajas
+p2= ggplot(data = dataset, aes(x = clasificacion, y = HGB, col = `Sexo del Paciente`)) + 
+    geom_boxplot()+
+    theme_classic()
+   
+final_plot = ggarrange(p1, p2, legend = "top")
+final_plot = annotate_figure(final_plot, top = text_grob("Hemoglobina", size =15))
+final_plot
+```
+
+
+```{r warning=FALSE, message=FALSE}
+# Gráfico 1: Histograma
+p1=ggplot(dataset, aes(x = VCM, color = `Sexo del Paciente`)) +
+    geom_histogram(fill = "white", alpha = 0.5, position = "identity") +
+    theme_classic()
+
+
+# Gráfico 2: Gráfico de cajas
+p2=ggplot(data = dataset, aes(x = clasificacion, y = VCM, col = `Sexo del Paciente`)) + 
+    geom_boxplot()+
+    theme_classic()
+  
+final_plot <- ggarrange(p1, p2, legend = "top")
+final_plot <- annotate_figure(final_plot, top = text_grob("VCM", size =15))
+final_plot
+```
+
+
+
+
+```{r warning=FALSE, message=FALSE}
+# Gráfico 1: Histograma
+p1=ggplot(dataset, aes(x = HCM, color = `Sexo del Paciente`)) +
+    geom_histogram(fill = "white", alpha = 0.5, position = "identity") +
+    theme_classic()
+
+# Gráfico 2: Gráfico de cajas
+p2=ggplot(data = dataset, aes(x = clasificacion, y = HCM, col = `Sexo del Paciente`)) + 
+    geom_boxplot()+
+    theme_classic()
+  
+final_plot = ggarrange(p1, p2, legend = "top")
+final_plot = annotate_figure(final_plot, top = text_grob("HCM", size =15))
+final_plot
+```
+
+```{r warning=FALSE, message=FALSE}
+# Gráfico 1: Histograma
+p1=ggplot(dataset, aes(x = IDM, color = `Sexo del Paciente`)) +
+    geom_histogram(fill = "white", alpha = 0.5, position = "identity") +
+    theme_classic()
+
+# Gráfico 2: Gráfico de cajas
+p2=ggplot(data = dataset, aes(x = clasificacion, y = IDM, col = `Sexo del Paciente`)) + 
+    geom_boxplot()+
+    theme_classic()
+  
+final_plot = ggarrange(p1, p2, legend = "top")
+final_plot = annotate_figure(final_plot, top = text_grob("ADE", size =15))
+final_plot
+```
+
+```{r warning=FALSE, message=FALSE}
+# Gráfico 1: Histograma
+p1=ggplot(dataset, aes(x = CHCM, color = `Sexo del Paciente`)) +
+    geom_histogram(fill = "white", alpha = 0.5, position = "identity") +
+    theme_classic()
+
+# Gráfico 2: Gráfico de cajas
+p2=ggplot(data = dataset, aes(x = clasificacion, y = CHCM, col = `Sexo del Paciente`)) + 
+    geom_boxplot()+
+    theme_classic()
+  
+final_plot = ggarrange(p1, p2, legend = "top")
+final_plot = annotate_figure(final_plot, top = text_grob("CHCM", size =15))
+final_plot
+```
+
+```{r warning=FALSE, message=FALSE}
+# Gráfico 1: Histograma
+p1=ggplot(dataset, aes(x = HTCO, color = `Sexo del Paciente`)) +
+    geom_histogram(fill = "white", alpha = 0.5, position = "identity") +
+    theme_classic()
+
+# Gráfico 2: Gráfico de cajas
+p2=ggplot(data = dataset, aes(x = clasificacion, y = HTCO, col = `Sexo del Paciente`)) + 
+    geom_boxplot()+
+    theme_classic()
+  
+final_plot = ggarrange(p1, p2, legend = "top")
+final_plot = annotate_figure(final_plot, top = text_grob("Hto", size =15))
+final_plot
+```
+
+### 2.2.3 Búsqueda de correlación entre variables
+
+Vemos también la matriz de correlación a para ver si hay relación entre los parámetros:
+
+```{r}
+cor(dataset[2:(ncol(dataset)-1)])
+```
+
+```{r}
+corrplot(cor(dataset[2:(ncol(dataset)-1)]))
+```
+```{r}
+ggpairs(dataset[2:(ncol(dataset)-1)])
+```
+
+
+Se ve que VCM y HCM una correlación elevada con un índice de correlación de 0.9339574 al igual que el Hto y la hemoglobina con índice de correlación del 0.9450355.
+Se decide eliminar las variables con índice mayor de 0,85, en este caso el HCM y Hto. 
+
+```{r}
+dataset <- subset(dataset, select = -c(HTCO, HCM))
+```
+
+### 2.2.4 Análisis de componentes principales
+
+Por último, se puede realizar una representación en dimensión reducida:
+```{r}
+PCA = prcomp(dataset[2:(ncol(dataset)-1)],center = TRUE,scale. = TRUE)
+PCA.raw = PCA$x[,1:2]
+plot(PCA.raw[,1], PCA.raw[,2],main = "Componentes principales",xlab = "PC1",ylab = "PC2",type="n")
+points(PCA.raw[,1], PCA.raw[,2],col=as.factor(dataset$clasificacion))
+```
+
+No se ven grupos según la clasificación.
+
+# 3. Preprocesamiento de datos
+
+## 3.1 Normalizamos las variables cuantitativas
+```{r}
+#dataset$`Sexo del Paciente`= as.integer(dataset$`Sexo del Paciente`) #convertimos en número a la variable cualitativa "sexo del paciente" para normalizarla
+#dataset_normalizado=scale(dataset[1:9])
+dataset_normalizado=scale(dataset[2:(ncol(dataset)-1)])
+```
+
+Vemos el resultado de la normalización:
+```{r}
+summary(dataset_normalizado)
+#Volvemos a representar el boxplot de las variables cuantitativas
+boxplot(dataset_normalizado, col= colores)
+```
+
+
+```{r}
+
+#cambiamos el nombre de las columnas añadidas
+#colnames(dataset_normalizado)[colnames(dataset_normalizado) == c("V1","V8")] <- c("Sexo", "Clasificación")
+
+#Dejamos las variables categóricas como variables dummy
+dummy <- model.matrix(~ `Sexo del Paciente` - 1, data = dataset)
+Clasificación=dataset$clasificacion
+dataset_encoded <- as.data.frame(cbind(dummy, dataset_normalizado))
+dataset_encoded= cbind(dataset_encoded, Clasificación)
+colnames(dataset_encoded)[colnames(dataset_encoded)== "`Sexo del Paciente`1"] = "Sexo_1"
+colnames(dataset_encoded)[colnames(dataset_encoded)== "`Sexo del Paciente`0"] = "Sexo_0"
+
+str(dataset_encoded)
+```
+
+
+## 3.2 División del dataset en train y test
+
+Hacemos la partición del dataset: 70% de los pacientes para el entrenamiento y el 30% para el testeo. 
+
+```{r}
+n = nrow(dataset_encoded)
+# Separamos los datos en Train y Test aleatoriamente
+set.seed(29)
+train = sample(n,floor(n*0.70))
+dataset.train = dataset_encoded[train,] #70%
+dataset.test  = dataset_encoded[-train,] #30%
+
+x.train= dataset.train[1:(ncol(dataset.train)-1)]
+y.train= dataset.train[ncol(dataset.train)]
+x.test= dataset.test[1:(ncol(dataset.train)-1)]
+y.test= dataset.test[ncol(dataset.train)]
+```
+
+
+Comprobamos que la los casos están distribuidos equitativamente entre el dataset train y test
+```{r}
+porcentajes_train=round(table(dataset.train$Clasificación)/nrow(dataset.train)*100,2)
+porcentajes_test=round(table(dataset.test$Clasificación)/nrow(dataset.test)*100,2)
+```
+
+```{r}
+kable(rbind(porcentajes_train,porcentajes_test))
+```
+
+Efectivamente, las clases se encuentran proporcionados en cada partición.
+
+## 3.3 Balanceo de los datos de entrenamiento
+
+Como hemos visto previamente, tenemos unos datos desbalanceados, por lo que vamos a utilizar la función SMOTE que crea nuevos casos sintéticos basados en los casos minoritarios.
+
+```{r  warning=FALSE, message=FALSE}
+library(smotefamily)
+```
+
+
+```{r}
+#oversampling AF
+set.seed(29)
+for (i in 1:nrow(x.train)){
+  dataset.train$AF[i] <- ifelse(dataset.train$Clasificación[i] == "AF","AF",0)
+}
+TRAINSET123.2 <- dataset.train[,-(ncol(dataset.train)-1)] 
+smote_result_AF = SMOTE(TRAINSET123.2[,-ncol(TRAINSET123.2)],target = TRAINSET123.2$AF, K = 3, dup_size = 2)
+
+oversampled_AF = smote_result_AF$data
+str(oversampled_AF)
+
+extra_AF<- filter(oversampled_AF, oversampled_AF$class == "AF")
+nrow(extra_AF)
+length(extra_AF)
+str(extra_AF)
+
+#oversampling FF  
+for (i in 1:nrow(x.train)){
+  dataset.train$FF[i] <- ifelse(dataset.train$Clasificación[i] == "FF","FF",0)
+}
+TRAINSET123.3 <- dataset.train[,-c(ncol(dataset.train)-1, (ncol(dataset.train)-2))] 
+smote_result_FF = SMOTE(TRAINSET123.3[,-ncol(TRAINSET123.3)],target = TRAINSET123.3$FF, K = 3, dup_size = 5)
+
+oversampled_FF = smote_result_FF$data
+extra_FF<- filter(oversampled_FF, oversampled_FF$class == "FF")
+str(extra_FF)
+
+
+#oversampling FL  
+for (i in 1:nrow(x.train)){
+  dataset.train$FL[i] <- ifelse(dataset.train$Clasificación[i] == "FL","FL",0)
+}
+TRAINSET123.4 <- dataset.train[,-c(ncol(dataset.train)-1, (ncol(dataset.train)-2), (ncol(dataset.train)-3))] 
+smote_result_FL = SMOTE(TRAINSET123.4[,-ncol(TRAINSET123.4)],target = TRAINSET123.4$FL , K = 3, dup_size = 4)
+
+oversampled_FL = smote_result_FL$data
+extra_FL<- filter(oversampled_FL, oversampled_FL$class == "FL")
+str(extra_FL)
+
+
+
+#create NEWTRAIN SET 
+data.train= subset(dataset.train, Clasificación == "NF")
+data.train= data.train[,-c(ncol(data.train), (ncol(data.train)-1), (ncol(data.train)-2))]
+
+#Cambiamos el nombre a la columna de clasificación para poder fusionarlas
+colnames(extra_AF)[colnames(extra_AF) == "class"]="Clasificación"
+colnames(extra_FF)[colnames(extra_FF) == "class"] = "Clasificación"
+colnames(extra_FL)[colnames(extra_FL) == "class"] = "Clasificación"
+
+
+data.train2 <- rbind(data.train,extra_AF, extra_FF, extra_FL)
+table(data.train2$Clasificación)
+dataset.train=data.train2
+```
+
+
+# 4. Aplicación de cada algoritmo para la clasificación 
+
+## 4.1 k-Nearest Neighbour 
+
+Probaremos distintos valores de k:
+```{r}
+set.seed(29)
+ks= c(1,3,5,7,10)
+global= data.frame(ks, Kappa=NA, Accuracy=NA, Falsos=NA)
+m=0
+for (i in ks){
+  m=m+1
+  test_prediccion= knn(train= dataset.train[1:(ncol(dataset.train)-1)], test= dataset.test[1:(ncol(dataset.test)-1)] , cl=  dataset.train$Clasificación , k=i)
+  confusion=confusionMatrix(table(dataset.test$Clasificación,test_prediccion)) 
+  global[m,2:4]= c(confusion$overall[2],confusion$overall[1], (1-confusion$overall[1])*100)
+}
+```
+```{r}
+kable(as.data.frame(global), col.names=c("Valor k", "Kappa","Accuracy", "% Error clasificación" ), align= c("l", "c","c","c","c") )
+```
+Vemos que el hay poca variación en el Accuracy consiguiendo el mejor valor con una k=1, por lo que hacemos el modelo con ello:
+
+
+```{r}
+# Evaluamos el modelo 
+set.seed(29)
+knn_prediccion= knn(train= dataset.train[(ncol(dataset.train)-1)], test= dataset.test[(ncol(dataset.test)-1)] , cl=  dataset.train$Clasificación , k=1)
+```
+
+```{r}
+res <- table(knn_prediccion, dataset.test$Clasificación)
+(mconfusion_knn <- confusionMatrix(res))
+```
+
+
+```{r}
+resultados_knn <- data.frame( Modelo        = "KNN",
+                              Parámetros    = "k=1",
+                              Accuracy      = round(mconfusion_knn[["overall"]][["Accuracy"]], 3),
+                              kappa         = round(mconfusion_knn[["overall"]][["Kappa"]],3),
+                              Error_clasificación = round((1-mconfusion_knn[["overall"]][["Accuracy"]])*100,3),
+                              AccuracyLower = round(mconfusion_knn[["overall"]][["AccuracyLower"]],3),
+                              AccuracyUpper = round(mconfusion_knn[["overall"]][["AccuracyUpper"]],3)
+                              )
+resultados_knn
+```
+
+## 4.2 Naive Bayes
+
+Esta técnica aplica el teorema de Bayes por lo que las variables deben ser cualitativas o discretas. 
+Se deben discretizar (binning) las variables numéricas, se puede hacer previamente o dejar que lo realice el algoritmo, en este caso lo hará el algoritmo.
+
+Se explorará la opción de activar o no laplace.
+
+Utilizamos los datos sin normalizar
+
+```{r}
+#Dejamos el dataset sin normalizar para que haga los ajustes el propio modelo
+dummy = model.matrix(~ `Sexo del Paciente` - 1, data = dataset)
+dataset_sin_normalizar= cbind(dummy, dataset[2:(ncol(dataset)-1)], Clasificación )
+colnames(dataset_sin_normalizar)[colnames(dataset_sin_normalizar)== "`Sexo del Paciente`1"] = "Sexo_1"
+colnames(dataset_sin_normalizar)[colnames(dataset_sin_normalizar)== "`Sexo del Paciente`0"] = "Sexo_0"
+
+dataset.train_SN = dataset_sin_normalizar[train,] #70%
+dataset.test_SN =dataset_sin_normalizar[-train,] #30%
+```
+
+
+```{r warning=FALSE, message=FALSE}
+library(e1071)
+set.seed(29)
+modeloBayes_0 = naiveBayes(dataset.train_SN[1:(ncol(dataset.train_SN)-1)], dataset.train_SN[(ncol(dataset.train_SN))], type="raw", laplace=0)
+```
+
+
+```{r}
+# Evaluamos el modelo 
+bayes_prediccion_0 <- predict(modeloBayes_0, dataset.test_SN[1:(ncol(dataset.test)-1)])
+```
+
+
+```{r}
+res <- table(bayes_prediccion_0, dataset.test_SN$Clasificación)
+(mconfusion_Bayes_0 <- confusionMatrix(res))
+```
+
+```{r}
+set.seed(29)
+modeloBayes_1 <- naiveBayes(dataset.train_SN[1:(ncol(dataset.train_SN)-1)], dataset.train_SN[(ncol(dataset.train_SN))], type="raw", laplace=1)
+```
+
+```{r}
+# Evaluamos el modelo 
+bayes_prediccion_1 <- predict(modeloBayes_1, dataset.test_SN[1:(ncol(dataset.test_SN)-1)])
+```
+
+```{r}
+res <- table(bayes_prediccion_1, dataset.test_SN$Clasificación)
+(mconfusion_Bayes_1 <- confusionMatrix(res))
+```
+Ambos modelos realizan las mismas predicciones, nos podríamos quedar con cualquiera. 
+
+```{r}
+resultados_NaiveBayes <- data.frame( Modelo        = "Naive Bayes",
+                              Parámetros    = "Laplace=0",
+                              Accuracy      = round(mconfusion_Bayes_0[["overall"]][["Accuracy"]], 3),
+                              kappa         = round(mconfusion_Bayes_0[["overall"]][["Kappa"]],3),
+                              Error_clasificación = round((1-mconfusion_Bayes_0[["overall"]][["Accuracy"]])*100,3),
+                              AccuracyLower = round(mconfusion_Bayes_0[["overall"]][["AccuracyLower"]],3),
+                              AccuracyUpper = round(mconfusion_Bayes_0[["overall"]][["AccuracyUpper"]],3)
+                              )
+resultados_NaiveBayes
+```
+
+## 4.3 Artificial Neural Network
+
+Se explorarán las arquitecturas con una y dos capas ocultas: 1) con 15 nodos en una capa oculta, 2) 25 y 10 nodos en cada capa oculta.
+Se usan los datos normalizados
+```{r}
+library(keras)
+library(tensorflow)
+library(tidyverse)
+library(reticulate)
+```
+
+```{r}
+#hacer matriz los datos de entrenamiento y test
+dataset.train_ANN= as.matrix(dataset.train[1:ncol(dataset.train)-1])
+dataset.test_ANN=as.matrix(dataset.test[1:ncol(dataset.test)-1])
+dim(dataset.train_ANN)
+dim(dataset.test_ANN)
+```
+```{r}
+class_train <- as.vector(dataset.train[[ncol(dataset.train)]])
+class_test <- as.vector(dataset.test[[ncol(dataset.test)]])
+
+class_train= factor(class_train, levels= c("AF", "FF", "FL", "NF"), labels= c(1,2,3,4))
+class_test= factor(class_test, levels= c("AF", "FF", "FL", "NF"), labels= c(1,2,3,4))
+
+y_train <- as.numeric(class_train) - 1 # integers from 0 to num_classes
+y_test <-as.numeric(class_test) - 1 # integers from 0 to num_classes
+str(y_test)
+str(y_train)
+table(y_train)
+table(y_test)
+str(class_train)
+```
+
+
+```{r}
+# Convertir las clases en matrices categóricas
+y_train.cat <- to_categorical(y_train)
+y_test.cat <- to_categorical(y_test)
+str(y_train.cat)
+str(y_test.cat)
+```
+
+
+```{r}
+# Definir una función para convertir variables categóricas en matrices categóricas PORQUE NO FUNCIONABA TENSORFLOW (LO DEJO POR SI ACASO)
+#to_categorical_custom <- function(y, num_classes = NULL) {
+#  if (is.null(num_classes)) {
+#    num_classes <- length(unique(y))
+#  }
+#  categorical_matrix <- matrix(0, nrow = length(y), ncol = num_classes)
+#  for (i in 1:length(y)) {
+#    categorical_matrix[i, y[i] + 1] <- 1  # Sumar 1 para que las clases vayan desde 1 hasta num_classes
+#  }
+#  return(categorical_matrix)
+#}
+
+# Convertimos la variable clasificación en una matriz categórica
+#y_train_categorical = to_categorical_custom(y_train)
+#y_test_categorical = to_categorical_custom(y_test)
+
+#Comprobación 
+#head(cbind(y_test, y_test_categorical))
+```
+
+### 4.3.1 ANN Modelo 1: 1 capa oculta
+
+```{r}
+#dataset.train_ANN
+#dataset.test_ANN
+#y_train_categorical 
+#y_test_categorical
+#y_train.cat
+set.seed(29)
+tf$random$set_seed(29)
+# Establecemos cómo va a ser la red neuronal
+input = layer_input(shape = c(ncol(dataset.train_ANN)))
+# Modelo 1:
+output <-input %>%
+layer_dense(units=15,activation="relu") %>%
+layer_dense(units=4,activation="softmax")
+dnn1 = keras_model(input, output)
+summary(dnn1)
+
+#Compilamos
+dnn1 %>% compile(
+optimizer = "rmsprop",
+loss = "categorical_crossentropy",
+metrics = c("acc")
+)
+
+#Entrenamos el modelo
+set.seed(29)
+history1 <- dnn1 %>% fit(
+dataset.train_ANN, y_train.cat,
+epochs = 50,batch = 32,
+validation_split = 0.2
+)
+plot(history1)
+
+#testeo
+yhat1<-predict(dnn1,dataset.test_ANN)
+dim(yhat1)
+length(y_test)
+yhat.class1<-apply(yhat1,1,which.max)
+yhat.class1 <- yhat.class1 - 1 # integers desde 0
+
+# Ajusta las dimensiones de las predicciones para que coincidan con las clases reales
+yhat.class1_ajustado <- factor(yhat.class1, levels = c(0,1,2,3))
+kk<- table(yhat.class1_ajustado, y_test)
+evalANN1 <- confusionMatrix(kk)
+evalANN1
+```
+```{r}
+resultados_ANN1 <- data.frame( Modelo        = "ANN-1",
+                              Parámetros    = "1 capas oculta",
+                              Accuracy      = round(evalANN1[["overall"]][["Accuracy"]], 3),
+                              kappa         = round(evalANN1[["overall"]][["Kappa"]],3),
+                              Error_clasificación = round((1-evalANN1[["overall"]][["Accuracy"]])*100,3),
+                              AccuracyLower = round(evalANN1[["overall"]][["AccuracyLower"]],3),
+                              AccuracyUpper = round(evalANN1[["overall"]][["AccuracyUpper"]],3)
+                              )
+resultados_ANN1
+```
+
+### 4.3.2 ANN Modelo 2: 2 capas ocultas
+```{r}
+tf$random$set_seed(29)
+set.seed(29)
+
+# Modelo 2:
+output <-input %>%
+layer_dense(units=25,activation="relu") %>%
+layer_dense(units=10,activation="relu") %>%
+layer_dense(units=4,activation="softmax")
+dnn2 = keras_model(input, output)
+summary(dnn2)
+
+#Se compila 
+dnn2 %>% compile(
+optimizer = "rmsprop",
+loss = "categorical_crossentropy",
+metrics = c("acc")
+)
+
+# Se entrena 
+history2 <- dnn2 %>% fit(
+dataset.train_ANN, y_train.cat,
+epochs = 50,
+batch = 32,
+validation_split = 0.2
+)
+plot(history2)
+
+# testeamos
+yhat2<-predict(dnn2,dataset.test_ANN)
+yhat.class2<-apply(yhat2,1,which.max)
+yhat.class2 <- yhat.class2 -1 # integers from 0
+
+# Ajusta las dimensiones de las predicciones para que coincidan con las clases reales
+yhat.class2_ajustado <- factor(yhat.class2, levels = c(0,1,2,3))
+kk<- table(yhat.class2_ajustado, y_test)
+evalANN2 <- confusionMatrix(kk)
+evalANN2
+```
+
+```{r}
+resultados_ANN2 <- data.frame( Modelo        = "ANN-2",
+                              Parámetros    = "2 capas ocultas",
+                              Accuracy      = round(evalANN2[["overall"]][["Accuracy"]], 3),
+                              kappa         = round(evalANN2[["overall"]][["Kappa"]],3),
+                              Error_clasificación = round((1-evalANN2[["overall"]][["Accuracy"]])*100,3),
+                              AccuracyLower = round(evalANN2[["overall"]][["AccuracyLower"]],3),
+                              AccuracyUpper = round(evalANN2[["overall"]][["AccuracyUpper"]],3)
+                              )
+resultados_ANN2
+```
+Se obtienen mejores resultados con el modelo de 2 capas ocultas
+
+```{r}
+detach("package:keras", unload = TRUE)
+detach("package:tensorflow", unload = TRUE)
+```
+
+
+
+## 4.4 Support Vector Machine
+
+Probamos SVM-lineal y SVM-radial
+Usamos los datos con las variables cuantitativas estandarizadas
+
+### 4.4.1 SVM-lineal
+```{r }
+set.seed(29)
+caret_lineal= train(Clasificación~., data=dataset.train, method="svmLinear")
+caret_lineal
+```
+
+```{r}
+p= predict(caret_lineal, dataset.test)
+res4 <- table(p, dataset.test$Clasificación)
+(mconfusion_lineal_caret <- confusionMatrix(res4))
+```
+ 
+### 4.4.2 SVM-RBF o función gaussiana
+
+```{r}
+set.seed(29)
+caret_Radial= train(Clasificación~., data=dataset.train, method="svmRadial")
+caret_Radial
+```
+```{r}
+p2= predict(caret_Radial, dataset.test)
+res6 <- table(p2, dataset.test$Clasificación)
+(mconfusion_Radial <- confusionMatrix(res6))
+```
+Entre estos dos modelos, se obtienen mejores resultados con el modelo Gaussiano.
+
+
+```{r}
+resultados_SVM_radial <- data.frame( Modelo        = "SVM-Radial",
+                              Parámetros    = "sigma = 0.16, C = 1",
+                              Accuracy      = round(mconfusion_Radial[["overall"]][["Accuracy"]], 3),
+                              kappa         = round(mconfusion_Radial[["overall"]][["Kappa"]],3),
+                              Error_clasificación = round((1-mconfusion_Radial[["overall"]][["Accuracy"]])*100,3),
+                              AccuracyLower = round(mconfusion_Radial[["overall"]][["AccuracyLower"]],3),
+                              AccuracyUpper = round(mconfusion_Radial[["overall"]][["AccuracyUpper"]],3)
+                              )
+resultados_SVM_radial
+```
+
+## 4.5 Árbol de decisión
+
+Se explorará la opción de activar o no boosting.
+Utilizaremos los datos sin normalizar.
+
+### 4.5.1 Árbol de decisión sin boosting
+```{r warning=FALSE, message=FALSE}
+library(C50)
+set.seed(29)
+modelo_C50= C5.0(dataset.train_SN[1:(ncol(dataset.train_SN)-1)], dataset.train_SN$Clasificación)
+modelo_C50
+```
+```{r}
+p2= predict(modelo_C50, dataset.test_SN)
+res9 <- table(p2, dataset.test_SN$Clasificación)
+(mconfusion_arbol <- confusionMatrix(res9))
+```
+
+### 4.5.2 Árbol de decisión con boosting
+```{r} 
+set.seed(29)
+modelo_C50_boosting= C5.0(dataset.train_SN[1:(ncol(dataset.train_SN)-1)], dataset.train_SN$Clasificación, trials= 15)
+modelo_C50_boosting
+```
+```{r}
+p2= predict(modelo_C50_boosting, dataset.test_SN)
+res10 <- table(p2, dataset.test_SN$Clasificación)
+(mconfusion_arbol_b <- confusionMatrix(res10))
+```
+
+Comprobamos que el modelo con boosting mejora ligeramente, que es el que nos quedaremos para comparar.
+
+```{r}
+resultados_arbol_b <- data.frame( Modelo        = "Árbol de decisión",
+                              Parámetros    = "modelo= Boosting",
+                              Accuracy      = round(mconfusion_arbol_b[["overall"]][["Accuracy"]], 3),
+                              kappa         = round(mconfusion_arbol_b[["overall"]][["Kappa"]],3),
+                              Error_clasificación = round((1-mconfusion_arbol_b[["overall"]][["Accuracy"]])*100,3),
+                              AccuracyLower = round(mconfusion_arbol_b[["overall"]][["AccuracyLower"]],3),
+                              AccuracyUpper = round(mconfusion_arbol_b[["overall"]][["AccuracyUpper"]],3)
+                              )
+resultados_arbol_b
+```
+
+
+## 4.6 Random Forest
+Se explorará la opción de número de árboles n = 100, 200.
+se utilizan los datos sin normalizar.
+
+### 4.6.1 RF ntree=100
+
+```{r warning=FALSE, message=FALSE}
+library(randomForest)
+set.seed(29)
+modelo_forest_100= randomForest(Clasificación~ . , data= dataset.train_SN, ntree=100)
+modelo_forest_100
+```
+
+```{r}
+p2= predict(modelo_forest_100, dataset.test_SN)
+res11 <- table(p2, dataset.test_SN$Clasificación)
+(mconfusion_forest_100 <- confusionMatrix(res11))
+```
+### 4.6.1 RF ntree=200
+
+
+```{r}
+set.seed(29)
+modelo_forest_200= randomForest(Clasificación~., data= dataset.train_SN, ntree=200)
+modelo_forest_200
+```
+
+```{r}
+p2= predict(modelo_forest_200, dataset.test_SN)
+res12 <- table(p2, dataset.test_SN$Clasificación)
+(mconfusion_forest_200 <- confusionMatrix(res12))
+```
+En este caso se obtiene el mismo resultado, podríamos elegir cualquiera.
+
+```{r}
+resultados_RF <- data.frame( Modelo        = "Random Forest",
+                              Parámetros    = "ntree=200",
+                              Accuracy      = round(mconfusion_forest_200[["overall"]][["Accuracy"]], 3),
+                              kappa         = round(mconfusion_forest_200[["overall"]][["Kappa"]],3),
+                              Error_clasificación = round((1-mconfusion_forest_200[["overall"]][["Accuracy"]])*100,3),
+                              AccuracyLower = round(mconfusion_forest_200[["overall"]][["AccuracyLower"]],3),
+                              AccuracyUpper = round(mconfusion_forest_200[["overall"]][["AccuracyUpper"]],3)
+                              )
+resultados_RF
+```
+
+
+
+# 5. Tabla resumen del rendimiento de los distintos modelos
+
+```{r}
+library(kableExtra)
+tabla_resumen= rbind(resultados_knn,
+                     resultados_NaiveBayes,
+                     resultados_ANN2, 
+                     resultados_SVM_radial, 
+                     resultados_arbol_b, 
+                     resultados_RF
+                     )
+
+#Establecemos el orden por valores de Accuracy
+orden = order(tabla_resumen$Accuracy, decreasing = TRUE)
+tabla_resumen_ordenada <- tabla_resumen[orden, ]
+
+kable(tabla_resumen_ordenada, digits = 3, caption = "Rendimiento de los modelos")
+```
+
+
+
+-------------------------------------------------------------------------------------------
+# APARTE
+
+## datos desbalanceados
+Para equilibrar nuestro conjunto de datos, hay dos formas de hacerlo:
+
+- Submuestreo: eliminar muestras de las clases sobrerrepresentadas, se podría llevar a cabo en el caso de tener muchos pacientes.
+
+- Sobremuestreo: añade más muestras de las clases minoritarias.
+
+```{r}
+#remotes::install_github("cran/DMwR")
+#library(DMwR)
+#?SMOTE
+#str(dataset)
+#SMOTE(clasificacion~., dataset, perc.over = 600, perc.under = 100)
+```
+
+
+
+
+https://es.linkedin.com/pulse/clases-desbalanceadas-y-su-tratamiento-en-r-felipe-maggi
+https://www.statology.org/smote-in-r/
+https://sitiobigdata.com/2019/12/24/clasificacion-multiclase-con-aprendizaje-automatico/
+
+
+https://tensorflow.rstudio.com/install/
