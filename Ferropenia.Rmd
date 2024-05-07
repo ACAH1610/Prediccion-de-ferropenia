@@ -3,16 +3,16 @@ title: "Ferropenia"
 author: "Andrea"
 date: "2024-03-21"
 output:
-  pdf_document:
+  html_document:
     toc: yes
-    toc_depth: '3'
+    toc_depth: 3
   word_document:
     toc: yes
     toc_depth: '3'
   output: null
-  html_document:
+  pdf_document:
     toc: yes
-    toc_depth: 3
+    toc_depth: '3'
 ---
 
 ```{r setup, include=FALSE}
@@ -522,49 +522,29 @@ No se ven grupos según la clasificación.
 
 # 3. Preprocesamiento de datos
 
-## 3.1 Normalizamos las variables cuantitativas
-```{r}
-#dataset$`Sexo del Paciente`= as.integer(dataset$`Sexo del Paciente`) #convertimos en número a la variable cualitativa "sexo del paciente" para normalizarla
-#dataset_normalizado=scale(dataset[1:9])
-dataset_normalizado=scale(dataset[2:(ncol(dataset)-1)])
-```
-
-Vemos el resultado de la normalización:
-```{r}
-summary(dataset_normalizado)
-#Volvemos a representar el boxplot de las variables cuantitativas
-boxplot(dataset_normalizado, col= colores)
-```
-
-
-```{r}
-
-#cambiamos el nombre de las columnas añadidas
-#colnames(dataset_normalizado)[colnames(dataset_normalizado) == c("V1","V8")] <- c("Sexo", "Clasificación")
-
-#Dejamos las variables categóricas como variables dummy
-dummy <- model.matrix(~ `Sexo del Paciente` - 1, data = dataset)
-Clasificación=dataset$clasificacion
-dataset_encoded <- as.data.frame(cbind(dummy, dataset_normalizado))
-dataset_encoded= cbind(dataset_encoded, Clasificación)
-colnames(dataset_encoded)[colnames(dataset_encoded)== "`Sexo del Paciente`1"] = "Sexo_1"
-colnames(dataset_encoded)[colnames(dataset_encoded)== "`Sexo del Paciente`0"] = "Sexo_0"
-
-str(dataset_encoded)
-```
-
-
 ## 3.2 División del dataset en train y test
 
 Hacemos la partición del dataset: 70% de los pacientes para el entrenamiento y el 30% para el testeo. 
 
 ```{r}
-n = nrow(dataset_encoded)
+#Dejamos las variables categóricas como variables dummy
+dummy <- model.matrix(~ `Sexo del Paciente` - 1, data = dataset)
+dataset <- as.data.frame(cbind(dummy, dataset[2:ncol(dataset)]))
+colnames(dataset)[colnames(dataset)== "`Sexo del Paciente`1"] = "Sexo_1"
+colnames(dataset)[colnames(dataset)== "`Sexo del Paciente`0"] = "Sexo_0"
+colnames(dataset)[colnames(dataset)== "clasificacion"] = "Clasificación"
+str(dataset)
+```
+
+
+
+```{r}
+n = nrow(dataset)
 # Separamos los datos en Train y Test aleatoriamente
 set.seed(29)
-train = sample(n,floor(n*0.70))
-dataset.train = dataset_encoded[train,] #70%
-dataset.test  = dataset_encoded[-train,] #30%
+train = createDataPartition(dataset$Clasificación,p = 0.7, list = FALSE)
+dataset.train = dataset[train,] #70%
+dataset.test  = dataset[-train,] #30%
 
 x.train= dataset.train[1:(ncol(dataset.train)-1)]
 y.train= dataset.train[ncol(dataset.train)]
@@ -583,108 +563,79 @@ porcentajes_test=round(table(dataset.test$Clasificación)/nrow(dataset.test)*100
 kable(rbind(porcentajes_train,porcentajes_test))
 ```
 
+
 Efectivamente, las clases se encuentran proporcionados en cada partición.
+
+## 3.1 Normalizamos 
+
+Realizamos la normalización de los datos basándonos en los datos de entrenamiento y será esta normalización la que utilicemos para la partición test.
+
+```{r}
+preProcValues = preProcess(x.train, method = c("center", "scale"))
+
+trainTransformed = predict(preProcValues, x.train)
+testTransformed = predict(preProcValues, x.test)
+dataset.test=cbind(testTransformed, y.test)
+dataset.train= cbind(trainTransformed, y.train)
+```
+
+
+Vemos el resultado de la normalización:
+```{r}
+summary(trainTransformed)
+#Volvemos a representar el boxplot de las variables cuantitativas del conjunto de entrenamiento
+boxplot(trainTransformed, col= colores)
+```
+
+
 
 ## 3.3 Balanceo de los datos de entrenamiento
 
 Como hemos visto previamente, tenemos unos datos desbalanceados, por lo que vamos a utilizar la función SMOTE que crea nuevos casos sintéticos basados en los casos minoritarios.
 
-```{r  warning=FALSE, message=FALSE}
-library(smotefamily)
-```
 
 
-```{r}
-#oversampling AF
-set.seed(29)
-for (i in 1:nrow(x.train)){
-  dataset.train$AF[i] <- ifelse(dataset.train$Clasificación[i] == "AF","AF",0)
-}
-TRAINSET123.2 <- dataset.train[,-(ncol(dataset.train)-1)] 
-smote_result_AF = SMOTE(TRAINSET123.2[,-ncol(TRAINSET123.2)],target = TRAINSET123.2$AF, K = 3, dup_size = 2)
-
-oversampled_AF = smote_result_AF$data
-str(oversampled_AF)
-
-extra_AF<- filter(oversampled_AF, oversampled_AF$class == "AF")
-nrow(extra_AF)
-length(extra_AF)
-str(extra_AF)
-
-#oversampling FF  
-for (i in 1:nrow(x.train)){
-  dataset.train$FF[i] <- ifelse(dataset.train$Clasificación[i] == "FF","FF",0)
-}
-TRAINSET123.3 <- dataset.train[,-c(ncol(dataset.train)-1, (ncol(dataset.train)-2))] 
-smote_result_FF = SMOTE(TRAINSET123.3[,-ncol(TRAINSET123.3)],target = TRAINSET123.3$FF, K = 3, dup_size = 5)
-
-oversampled_FF = smote_result_FF$data
-extra_FF<- filter(oversampled_FF, oversampled_FF$class == "FF")
-str(extra_FF)
-
-
-#oversampling FL  
-for (i in 1:nrow(x.train)){
-  dataset.train$FL[i] <- ifelse(dataset.train$Clasificación[i] == "FL","FL",0)
-}
-TRAINSET123.4 <- dataset.train[,-c(ncol(dataset.train)-1, (ncol(dataset.train)-2), (ncol(dataset.train)-3))] 
-smote_result_FL = SMOTE(TRAINSET123.4[,-ncol(TRAINSET123.4)],target = TRAINSET123.4$FL , K = 3, dup_size = 4)
-
-oversampled_FL = smote_result_FL$data
-extra_FL<- filter(oversampled_FL, oversampled_FL$class == "FL")
-str(extra_FL)
-
-
-
-#create NEWTRAIN SET 
-data.train= subset(dataset.train, Clasificación == "NF")
-data.train= data.train[,-c(ncol(data.train), (ncol(data.train)-1), (ncol(data.train)-2))]
-
-#Cambiamos el nombre a la columna de clasificación para poder fusionarlas
-colnames(extra_AF)[colnames(extra_AF) == "class"]="Clasificación"
-colnames(extra_FF)[colnames(extra_FF) == "class"] = "Clasificación"
-colnames(extra_FL)[colnames(extra_FL) == "class"] = "Clasificación"
-
-
-data.train2 <- rbind(data.train,extra_AF, extra_FF, extra_FL)
-table(data.train2$Clasificación)
-dataset.train=data.train2
-```
 
 
 # 4. Aplicación de cada algoritmo para la clasificación 
 
+Realizaremos un 10-fold CrossValidation con 10 repeticiones en cada uno de los modelos.
+```{r}
+fitControl <- trainControl(method = "repeatedcv",
+                           number = 10,
+                           repeats = 10)
+```
+
 ## 4.1 k-Nearest Neighbour 
 
-Probaremos distintos valores de k:
-```{r}
+```{r warning=FALSE, message=FALSE}
+# Hiperparámetros
+hiperparametros <- data.frame(k = c(1,5,10,15,20))
+
+# Ajuste del modelo
 set.seed(29)
-ks= c(1,3,5,7,10)
-global= data.frame(ks, Kappa=NA, Accuracy=NA, Falsos=NA)
-m=0
-for (i in ks){
-  m=m+1
-  test_prediccion= knn(train= dataset.train[1:(ncol(dataset.train)-1)], test= dataset.test[1:(ncol(dataset.test)-1)] , cl=  dataset.train$Clasificación , k=i)
-  confusion=confusionMatrix(table(dataset.test$Clasificación,test_prediccion)) 
-  global[m,2:4]= c(confusion$overall[2],confusion$overall[1], (1-confusion$overall[1])*100)
-}
-```
-```{r}
-kable(as.data.frame(global), col.names=c("Valor k", "Kappa","Accuracy", "% Error clasificación" ), align= c("l", "c","c","c","c") )
-```
-Vemos que el hay poca variación en el Accuracy consiguiendo el mejor valor con una k=1, por lo que hacemos el modelo con ello:
+modelo_knn <- train(Clasificación ~ ., data = dataset.train,
+                    method = "knn",
+                    tuneGrid = hiperparametros,
+                    metric = "Accuracy",
+                    trControl = fitControl)
+
+modelo_knn
+
+# Gráfica de la evolución de k
+ggplot(modelo_knn) +
+  labs(title = "Evolución del Accuracy del modelo KNN", x = "K") +
+  theme_bw () +
+  theme(plot.title = element_text(hjust = 0.5))
+
+# Predicciones
+knn_prediccion <- predict(modelo_knn, newdata = dataset.test[,-(ncol(dataset.test))],type = "raw")
 
 
-```{r}
-# Evaluamos el modelo 
-set.seed(29)
-knn_prediccion= knn(train= dataset.train[(ncol(dataset.train)-1)], test= dataset.test[(ncol(dataset.test)-1)] , cl=  dataset.train$Clasificación , k=1)
+# Evaluación
+(mconfusion_knn <- confusionMatrix(knn_prediccion, dataset.test$Clasificación))
 ```
 
-```{r}
-res <- table(knn_prediccion, dataset.test$Clasificación)
-(mconfusion_knn <- confusionMatrix(res))
-```
 
 
 ```{r}
@@ -706,70 +657,104 @@ Se deben discretizar (binning) las variables numéricas, se puede hacer previame
 
 Se explorará la opción de activar o no laplace.
 
-Utilizamos los datos sin normalizar
-
-```{r}
-#Dejamos el dataset sin normalizar para que haga los ajustes el propio modelo
-dummy = model.matrix(~ `Sexo del Paciente` - 1, data = dataset)
-dataset_sin_normalizar= cbind(dummy, dataset[2:(ncol(dataset)-1)], Clasificación )
-colnames(dataset_sin_normalizar)[colnames(dataset_sin_normalizar)== "`Sexo del Paciente`1"] = "Sexo_1"
-colnames(dataset_sin_normalizar)[colnames(dataset_sin_normalizar)== "`Sexo del Paciente`0"] = "Sexo_0"
-
-dataset.train_SN = dataset_sin_normalizar[train,] #70%
-dataset.test_SN =dataset_sin_normalizar[-train,] #30%
-```
-
 
 ```{r warning=FALSE, message=FALSE}
-library(e1071)
+# Hiperparámetros
+hiperparametros <- expand.grid(usekernel = c(TRUE, FALSE),
+                               fL = c(0,1),
+                               adjust = c(1:5))
 set.seed(29)
-modeloBayes_0 = naiveBayes(dataset.train_SN[1:(ncol(dataset.train_SN)-1)], dataset.train_SN[(ncol(dataset.train_SN))], type="raw", laplace=0)
+
+# Ajuste del modelo
+set.seed(342)
+( modelo_bayes = train(Clasificación ~ ., data = dataset.train,
+                   method = "nb",
+                   tuneGrid = hiperparametros,
+                   metric = "Accuracy",
+                   trControl = fitControl))
+
+
+# Gráfica
+ggplot(modelo_bayes) +
+  labs(title = "Evolución del Accuracy del modelo Naive Bayes", x = "K") +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5))
 ```
 
 
-```{r}
-# Evaluamos el modelo 
-bayes_prediccion_0 <- predict(modeloBayes_0, dataset.test_SN[1:(ncol(dataset.test)-1)])
-```
+```{r warning=FALSE, message=FALSE} 
+# Predicciones
+bayes_prediccion <- predict(modelo_bayes, dataset.test[1:(ncol(dataset.test)-1)])
 
+# Evaluación
+(mconfusion_Bayes <- confusionMatrix(bayes_prediccion, dataset.test$Clasificación))
 
-```{r}
-res <- table(bayes_prediccion_0, dataset.test_SN$Clasificación)
-(mconfusion_Bayes_0 <- confusionMatrix(res))
 ```
-
-```{r}
-set.seed(29)
-modeloBayes_1 <- naiveBayes(dataset.train_SN[1:(ncol(dataset.train_SN)-1)], dataset.train_SN[(ncol(dataset.train_SN))], type="raw", laplace=1)
-```
-
-```{r}
-# Evaluamos el modelo 
-bayes_prediccion_1 <- predict(modeloBayes_1, dataset.test_SN[1:(ncol(dataset.test_SN)-1)])
-```
-
-```{r}
-res <- table(bayes_prediccion_1, dataset.test_SN$Clasificación)
-(mconfusion_Bayes_1 <- confusionMatrix(res))
-```
-Ambos modelos realizan las mismas predicciones, nos podríamos quedar con cualquiera. 
 
 ```{r}
 resultados_NaiveBayes <- data.frame( Modelo        = "Naive Bayes",
-                              Parámetros    = "Laplace=0",
-                              Accuracy      = round(mconfusion_Bayes_0[["overall"]][["Accuracy"]], 3),
-                              kappa         = round(mconfusion_Bayes_0[["overall"]][["Kappa"]],3),
-                              Error_clasificación = round((1-mconfusion_Bayes_0[["overall"]][["Accuracy"]])*100,3),
-                              AccuracyLower = round(mconfusion_Bayes_0[["overall"]][["AccuracyLower"]],3),
-                              AccuracyUpper = round(mconfusion_Bayes_0[["overall"]][["AccuracyUpper"]],3)
+                              Parámetros    = "",
+                              Accuracy      = round(mconfusion_Bayes[["overall"]][["Accuracy"]], 3),
+                              kappa         = round(mconfusion_Bayes[["overall"]][["Kappa"]],3),
+                              Error_clasificación = round((1-mconfusion_Bayes[["overall"]][["Accuracy"]])*100,3),
+                              AccuracyLower = round(mconfusion_Bayes[["overall"]][["AccuracyLower"]],3),
+                              AccuracyUpper = round(mconfusion_Bayes[["overall"]][["AccuracyUpper"]],3)
                               )
 resultados_NaiveBayes
 ```
 
 ## 4.3 Artificial Neural Network
 
+### 4.4.0 ANN-caret
+```{r warning=FALSE, message=FALSE}
+#hiperparametros 
+hiperparametros = expand.grid(size = c(10, 20, 50, 80, 100, 120),
+                               decay = c(0.0001, 0.00001, 0.1))
+
+
+
+# Ajuste del modelo 
+set.seed(29)
+
+modelo_ann <- train(Clasificación ~ ., data = dataset.train,
+                    method = "nnet",
+                    tuneGrid = hiperparametros,
+                    metric = "Accuracy",
+                    trControl = fitControl,
+                    MaxNWts = 2000,
+                    trace = FALSE)
+modelo_ann
+
+
+# Gráfica
+ggplot(modelo_ann, highlight = TRUE) +
+  labs(title = "Evolución del accuracy del modelo ANN") +
+  theme_bw()+
+  theme(plot.title = element_text(hjust = 0.5))
+
+# Predicciones
+predicciones_ann <- predict(modelo_ann, newdata = dataset.test[1:(ncol(dataset.test)-1)], type = "raw")
+
+# Evaluación
+res = table(predicciones_ann, dataset.test$Clasificación)
+(mconfusion_ann = confusionMatrix(res))
+```
+
+```{r}
+resultados_ann_caret = data.frame( Modelo        = "ANN caret",
+                              Parámetros    = "",
+                              Accuracy      = round(mconfusion_ann[["overall"]][["Accuracy"]], 3),
+                              kappa         = round(mconfusion_ann[["overall"]][["Kappa"]],3),
+                              Error_clasificación = round((1-mconfusion_ann[["overall"]][["Accuracy"]])*100,3),
+                              AccuracyLower = round(mconfusion_ann[["overall"]][["AccuracyLower"]],3),
+                              AccuracyUpper = round(mconfusion_ann[["overall"]][["AccuracyUpper"]],3)
+                              )
+resultados_ann_caret
+```
+
 Se explorarán las arquitecturas con una y dos capas ocultas: 1) con 15 nodos en una capa oculta, 2) 25 y 10 nodos en cada capa oculta.
 Se usan los datos normalizados
+
 ```{r}
 library(keras)
 library(tensorflow)
@@ -784,15 +769,17 @@ dataset.test_ANN=as.matrix(dataset.test[1:ncol(dataset.test)-1])
 dim(dataset.train_ANN)
 dim(dataset.test_ANN)
 ```
+
 ```{r}
-class_train <- as.vector(dataset.train[[ncol(dataset.train)]])
-class_test <- as.vector(dataset.test[[ncol(dataset.test)]])
+
+class_train = as.vector(dataset.train[[ncol(dataset.train)]])
+class_test = as.vector(dataset.test[[ncol(dataset.test)]])
 
 class_train= factor(class_train, levels= c("AF", "FF", "FL", "NF"), labels= c(1,2,3,4))
 class_test= factor(class_test, levels= c("AF", "FF", "FL", "NF"), labels= c(1,2,3,4))
 
-y_train <- as.numeric(class_train) - 1 # integers from 0 to num_classes
-y_test <-as.numeric(class_test) - 1 # integers from 0 to num_classes
+y_train = as.numeric(class_train) - 1 # integers from 0 to num_classes
+y_test = as.numeric(class_test) - 1 # integers from 0 to num_classes
 str(y_test)
 str(y_train)
 table(y_train)
@@ -803,8 +790,8 @@ str(class_train)
 
 ```{r}
 # Convertir las clases en matrices categóricas
-y_train.cat <- to_categorical(y_train)
-y_test.cat <- to_categorical(y_test)
+y_train.cat = to_categorical(y_train)
+y_test.cat = to_categorical(y_test)
 str(y_train.cat)
 str(y_test.cat)
 ```
@@ -844,7 +831,7 @@ tf$random$set_seed(29)
 # Establecemos cómo va a ser la red neuronal
 input = layer_input(shape = c(ncol(dataset.train_ANN)))
 # Modelo 1:
-output <-input %>%
+output = input %>%
 layer_dense(units=15,activation="relu") %>%
 layer_dense(units=4,activation="softmax")
 dnn1 = keras_model(input, output)
@@ -859,7 +846,7 @@ metrics = c("acc")
 
 #Entrenamos el modelo
 set.seed(29)
-history1 <- dnn1 %>% fit(
+history1 = dnn1 %>% fit(
 dataset.train_ANN, y_train.cat,
 epochs = 50,batch = 32,
 validation_split = 0.2
@@ -867,20 +854,21 @@ validation_split = 0.2
 plot(history1)
 
 #testeo
-yhat1<-predict(dnn1,dataset.test_ANN)
+yhat1 = predict(dnn1,dataset.test_ANN)
 dim(yhat1)
 length(y_test)
-yhat.class1<-apply(yhat1,1,which.max)
-yhat.class1 <- yhat.class1 - 1 # integers desde 0
+yhat.class1 = apply(yhat1,1,which.max)
+yhat.class1 = yhat.class1 - 1 # integers desde 0
 
 # Ajusta las dimensiones de las predicciones para que coincidan con las clases reales
-yhat.class1_ajustado <- factor(yhat.class1, levels = c(0,1,2,3))
+yhat.class1_ajustado = factor(yhat.class1, levels = c(0,1,2,3))
 kk<- table(yhat.class1_ajustado, y_test)
 evalANN1 <- confusionMatrix(kk)
 evalANN1
 ```
+
 ```{r}
-resultados_ANN1 <- data.frame( Modelo        = "ANN-1",
+resultados_ANN1 = data.frame( Modelo        = "ANN-1",
                               Parámetros    = "1 capas oculta",
                               Accuracy      = round(evalANN1[["overall"]][["Accuracy"]], 3),
                               kappa         = round(evalANN1[["overall"]][["Kappa"]],3),
@@ -897,7 +885,7 @@ tf$random$set_seed(29)
 set.seed(29)
 
 # Modelo 2:
-output <-input %>%
+output = input %>%
 layer_dense(units=25,activation="relu") %>%
 layer_dense(units=10,activation="relu") %>%
 layer_dense(units=4,activation="softmax")
@@ -912,7 +900,7 @@ metrics = c("acc")
 )
 
 # Se entrena 
-history2 <- dnn2 %>% fit(
+history2 = dnn2 %>% fit(
 dataset.train_ANN, y_train.cat,
 epochs = 50,
 batch = 32,
@@ -921,14 +909,14 @@ validation_split = 0.2
 plot(history2)
 
 # testeamos
-yhat2<-predict(dnn2,dataset.test_ANN)
-yhat.class2<-apply(yhat2,1,which.max)
-yhat.class2 <- yhat.class2 -1 # integers from 0
+yhat2=predict(dnn2,dataset.test_ANN)
+yhat.class2=apply(yhat2,1,which.max)
+yhat.class2 = yhat.class2 -1 # integers from 0
 
 # Ajusta las dimensiones de las predicciones para que coincidan con las clases reales
-yhat.class2_ajustado <- factor(yhat.class2, levels = c(0,1,2,3))
-kk<- table(yhat.class2_ajustado, y_test)
-evalANN2 <- confusionMatrix(kk)
+yhat.class2_ajustado = factor(yhat.class2, levels = c(0,1,2,3))
+kk= table(yhat.class2_ajustado, y_test)
+evalANN2 = confusionMatrix(kk)
 evalANN2
 ```
 
@@ -958,76 +946,196 @@ Probamos SVM-lineal y SVM-radial
 Usamos los datos con las variables cuantitativas estandarizadas
 
 ### 4.4.1 SVM-lineal
-```{r }
+
+```{r warning=FALSE, message=FALSE }
+# Hiperparámetros
+hiperparametros = data.frame(C = c(0.5,1,5,10,15,20,30,40,50))
+
+# Ajuste del modelo 
 set.seed(29)
-caret_lineal= train(Clasificación~., data=dataset.train, method="svmLinear")
-caret_lineal
+modelo_svmlineal = train(Clasificación ~ ., data = dataset.train,
+                          method = "svmLinear",
+                          tuneGrid = hiperparametros,
+                          metric = "Accuracy",
+                          trControl = fitControl)
+
+modelo_svmlineal
+
+
+# Gráfico
+ggplot(modelo_svmlineal) +
+  labs(title = "Evolución del Accuracy del modelo SVMlineal") +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5))
+
+
+# Predicciones
+svmlineal_predicciones = predict(modelo_svmlineal, newdata = dataset.test[1:(ncol(dataset.test)-1)])
+
+# Evaluación
+(mconfusion_svmlineal = confusionMatrix(svmlineal_predicciones, dataset.test$Clasificación))
+
 ```
 
-```{r}
-p= predict(caret_lineal, dataset.test)
-res4 <- table(p, dataset.test$Clasificación)
-(mconfusion_lineal_caret <- confusionMatrix(res4))
-```
+
  
 ### 4.4.2 SVM-RBF o función gaussiana
 
-```{r}
-set.seed(29)
-caret_Radial= train(Clasificación~., data=dataset.train, method="svmRadial")
-caret_Radial
-```
-```{r}
-p2= predict(caret_Radial, dataset.test)
-res6 <- table(p2, dataset.test$Clasificación)
-(mconfusion_Radial <- confusionMatrix(res6))
-```
-Entre estos dos modelos, se obtienen mejores resultados con el modelo Gaussiano.
+```{r warning=FALSE, message=FALSE}
+#Hiperparámetros
+hiperparametros = expand.grid(sigma = c(0.5,1,2,3,5),
+                               C = c(1,5,10,15,20,30))
 
+# Ajuste del modelo 
+set.seed(29)
+modelo_svmradial = train(Clasificación ~ ., data = dataset.train,
+                          method = "svmRadial",
+                          tuneGrid = hiperparametros,
+                          metric = "Accuracy",
+                          trControl = fitControl)
+
+modelo_svmradial
+
+
+# Gráfico
+ggplot(modelo_svmradial) +
+  labs(title = "Evolución del Accuracy del modelo SVMRadial") +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+
+```{r}
+# Predicciones
+svmradial_predicciones = predict(modelo_svmradial, newdata = dataset.test[1:(ncol(dataset.test)-1)])
+
+# Evaluación
+(mconfusion_svmradial = confusionMatrix(svmradial_predicciones, dataset.test$Clasificación))
+
+```
 
 ```{r}
 resultados_SVM_radial <- data.frame( Modelo        = "SVM-Radial",
-                              Parámetros    = "sigma = 0.16, C = 1",
-                              Accuracy      = round(mconfusion_Radial[["overall"]][["Accuracy"]], 3),
-                              kappa         = round(mconfusion_Radial[["overall"]][["Kappa"]],3),
-                              Error_clasificación = round((1-mconfusion_Radial[["overall"]][["Accuracy"]])*100,3),
-                              AccuracyLower = round(mconfusion_Radial[["overall"]][["AccuracyLower"]],3),
-                              AccuracyUpper = round(mconfusion_Radial[["overall"]][["AccuracyUpper"]],3)
+                              Parámetros    = "sigma = 3, C = 20",
+                              Accuracy      = round(mconfusion_svmradial[["overall"]][["Accuracy"]], 3),
+                              kappa         = round(mconfusion_svmradial[["overall"]][["Kappa"]],3),
+                              Error_clasificación = round((1-mconfusion_svmradial[["overall"]][["Accuracy"]])*100,3),
+                              AccuracyLower = round(mconfusion_svmradial[["overall"]][["AccuracyLower"]],3),
+                              AccuracyUpper = round(mconfusion_svmradial[["overall"]][["AccuracyUpper"]],3)
                               )
 resultados_SVM_radial
 ```
 
-## 4.5 Árbol de decisión
+### 4.4.3 SVM-polynomial
+```{r warning=FALSE, message=FALSE} 
+# Hiperparámetros
+hiperparametros = expand.grid(degree = c(2),
+                               scale = c(0.1,0.2,0.3,0.5,0.7,1),
+                               C = c(5,10,15,20,30,40,50,80))
+# Ajuste del modelo 
+set.seed(29)
+modelo_svmpoly = train(Clasificación ~ ., data = dataset.train,
+                          method = "svmPoly",
+                          tuneGrid = hiperparametros,
+                          metric = "Accuracy",
+                          trControl = fitControl)
 
-Se explorará la opción de activar o no boosting.
-Utilizaremos los datos sin normalizar.
+modelo_svmpoly
+
+
+# Gráfico
+ggplot(modelo_svmpoly) +
+  labs(title = "Evolución del Accuracy del modelo SVMpolynomial") +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+
+```{r}
+# Predicciones
+svmpoly_predicciones = predict(modelo_svmpoly, newdata = dataset.test[1:(ncol(dataset.test)-1)], type = "raw")
+
+# Evaluación
+(mconfusion_svmpoly = confusionMatrix(svmpoly_predicciones, dataset.test$Clasificación))
+
+```
+
+```{r}
+resultados_SVM_poly <- data.frame( Modelo        = "SVM-poly",
+                              Parámetros    = "",
+                              Accuracy      = round(mconfusion_svmpoly[["overall"]][["Accuracy"]], 3),
+                              kappa         = round(mconfusion_svmpoly[["overall"]][["Kappa"]],3),
+                              Error_clasificación = round((1-mconfusion_svmpoly[["overall"]][["Accuracy"]])*100,3),
+                              AccuracyLower = round(mconfusion_svmpoly[["overall"]][["AccuracyLower"]],3),
+                              AccuracyUpper = round(mconfusion_svmpoly[["overall"]][["AccuracyUpper"]],3)
+                              )
+resultados_SVM_poly
+```
+
+
+
+
+## 4.5 Árbol de decisión
 
 ### 4.5.1 Árbol de decisión sin boosting
 ```{r warning=FALSE, message=FALSE}
-library(C50)
+#Hiperparámetros
+hiperparametros <- data.frame(parameter = "none")
+
+# Ajuste del modelo
 set.seed(29)
-modelo_C50= C5.0(dataset.train_SN[1:(ncol(dataset.train_SN)-1)], dataset.train_SN$Clasificación)
-modelo_C50
+modelo_C5.0_sinhp <- train(Clasificación ~ ., data = dataset.train,
+                     method = "C5.0Tree",
+                     tuneGrid = hiperparametros,
+                     metric = "Accuracy",
+                     trControl = fitControl)
+modelo_C5.0_sinhp
+
+#summary(modelo_C5.0$finalModel)
+
+# Predicciones
+predicciones_C5.0_sinhp <- predict(modelo_C5.0_sinhp, dataset.test[1:(ncol(dataset.test)-1)])
+
+# Evaluación
+(mconfusion_arbol_sinhp <- confusionMatrix(data = predicciones_C5.0_sinhp, reference = dataset.test$Clasificación))
+
 ```
-```{r}
-p2= predict(modelo_C50, dataset.test_SN)
-res9 <- table(p2, dataset.test_SN$Clasificación)
-(mconfusion_arbol <- confusionMatrix(res9))
-```
+
 
 ### 4.5.2 Árbol de decisión con boosting
-```{r} 
+
+
+```{r warning=FALSE, message=FALSE}
+#Hiperparámetros
+hiperparametros <- expand.grid(trials = c(10:40),
+                               model = "tree",
+                               winnow = c(FALSE))
+
+# Ajuste del modelo
 set.seed(29)
-modelo_C50_boosting= C5.0(dataset.train_SN[1:(ncol(dataset.train_SN)-1)], dataset.train_SN$Clasificación, trials= 15)
-modelo_C50_boosting
-```
-```{r}
-p2= predict(modelo_C50_boosting, dataset.test_SN)
-res10 <- table(p2, dataset.test_SN$Clasificación)
-(mconfusion_arbol_b <- confusionMatrix(res10))
+modelo_C5.0 <- train(Clasificación ~ ., data = dataset.train,
+                     method = "C5.0",
+                     tuneGrid = hiperparametros,
+                     metric = "Accuracy",
+                     trControl = fitControl)
+modelo_C5.0
+
+# Gráfico
+ggplot(modelo_C5.0, highlight = TRUE) +
+  labs(title = "Evolución del Accuracy del modelo C5.0") +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5))
+
+# Predicciones
+predicciones_C5.0 <- predict(modelo_C5.0, dataset.test[1:(ncol(dataset.test)-1)])
+
+# Evaluación
+(mconfusion_arbol_b <- confusionMatrix(data = predicciones_C5.0, reference = dataset.test$Clasificación))
+
 ```
 
-Comprobamos que el modelo con boosting mejora ligeramente, que es el que nos quedaremos para comparar.
+
+Comprobamos que el modelo con boosting presenta mejores resultados, que es el que nos quedaremos para comparar.
 
 ```{r}
 resultados_arbol_b <- data.frame( Modelo        = "Árbol de decisión",
@@ -1044,46 +1152,50 @@ resultados_arbol_b
 
 ## 4.6 Random Forest
 Se explorará la opción de número de árboles n = 100, 200.
-se utilizan los datos sin normalizar.
 
-### 4.6.1 RF ntree=100
 
 ```{r warning=FALSE, message=FALSE}
-library(randomForest)
+# Hiperparámetros
+hiperparametros <- expand.grid(mtry = c(1:5),
+                               min.node.size = c(1,2,3,4,5),
+                               splitrule = c("gini"))
+
+# Ajuste del modelo
 set.seed(29)
-modelo_forest_100= randomForest(Clasificación~ . , data= dataset.train_SN, ntree=100)
-modelo_forest_100
-```
-
-```{r}
-p2= predict(modelo_forest_100, dataset.test_SN)
-res11 <- table(p2, dataset.test_SN$Clasificación)
-(mconfusion_forest_100 <- confusionMatrix(res11))
-```
-### 4.6.1 RF ntree=200
+modelo_forest <- train(Clasificación ~ ., data = dataset.train,
+                   method = "ranger",
+                   tuneGrid = hiperparametros,
+                   metric = "Accuracy",
+                   trControl = fitControl,
+                   # Número de árboles ajustados
+                   num.trees = 500)
+modelo_forest
 
 
-```{r}
-set.seed(29)
-modelo_forest_200= randomForest(Clasificación~., data= dataset.train_SN, ntree=200)
-modelo_forest_200
+# Gráfico
+ggplot(modelo_forest) +
+  labs(title = "Evolución del Accuracy del modelo Random Forest") +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5))
+
+
+# Predicciones
+predicciones_rf <- predict(modelo_forest, newdata = dataset.test, type = "raw")
+
+
+# Evaluación
+(mconfusion_forest <- confusionMatrix(data = predicciones_rf, reference = dataset.test$Clasificación))
 ```
 
-```{r}
-p2= predict(modelo_forest_200, dataset.test_SN)
-res12 <- table(p2, dataset.test_SN$Clasificación)
-(mconfusion_forest_200 <- confusionMatrix(res12))
-```
-En este caso se obtiene el mismo resultado, podríamos elegir cualquiera.
 
 ```{r}
 resultados_RF <- data.frame( Modelo        = "Random Forest",
                               Parámetros    = "ntree=200",
-                              Accuracy      = round(mconfusion_forest_200[["overall"]][["Accuracy"]], 3),
-                              kappa         = round(mconfusion_forest_200[["overall"]][["Kappa"]],3),
-                              Error_clasificación = round((1-mconfusion_forest_200[["overall"]][["Accuracy"]])*100,3),
-                              AccuracyLower = round(mconfusion_forest_200[["overall"]][["AccuracyLower"]],3),
-                              AccuracyUpper = round(mconfusion_forest_200[["overall"]][["AccuracyUpper"]],3)
+                              Accuracy      = round(mconfusion_forest[["overall"]][["Accuracy"]], 3),
+                              kappa         = round(mconfusion_forest[["overall"]][["Kappa"]],3),
+                              Error_clasificación = round((1-mconfusion_forest[["overall"]][["Accuracy"]])*100,3),
+                              AccuracyLower = round(mconfusion_forest[["overall"]][["AccuracyLower"]],3),
+                              AccuracyUpper = round(mconfusion_forest[["overall"]][["AccuracyUpper"]],3)
                               )
 resultados_RF
 ```
@@ -1096,8 +1208,11 @@ resultados_RF
 library(kableExtra)
 tabla_resumen= rbind(resultados_knn,
                      resultados_NaiveBayes,
+                     resultados_ann_caret,
+                     resultados_ANN1,
                      resultados_ANN2, 
-                     resultados_SVM_radial, 
+                     resultados_SVM_radial,
+                     resultados_SVM_poly,
                      resultados_arbol_b, 
                      resultados_RF
                      )
@@ -1111,30 +1226,13 @@ kable(tabla_resumen_ordenada, digits = 3, caption = "Rendimiento de los modelos"
 
 
 
--------------------------------------------------------------------------------------------
-# APARTE
 
-## datos desbalanceados
-Para equilibrar nuestro conjunto de datos, hay dos formas de hacerlo:
-
-- Submuestreo: eliminar muestras de las clases sobrerrepresentadas, se podría llevar a cabo en el caso de tener muchos pacientes.
-
-- Sobremuestreo: añade más muestras de las clases minoritarias.
-
-```{r}
-#remotes::install_github("cran/DMwR")
-#library(DMwR)
-#?SMOTE
-#str(dataset)
-#SMOTE(clasificacion~., dataset, perc.over = 600, perc.under = 100)
-```
-
-
-
+Bibliografía: 
 
 https://es.linkedin.com/pulse/clases-desbalanceadas-y-su-tratamiento-en-r-felipe-maggi
 https://www.statology.org/smote-in-r/
 https://sitiobigdata.com/2019/12/24/clasificacion-multiclase-con-aprendizaje-automatico/
-
-
 https://tensorflow.rstudio.com/install/
+
+ejemplos caret:
+https://rpubs.com/Joaquin_AR/383283
